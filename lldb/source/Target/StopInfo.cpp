@@ -1159,6 +1159,38 @@ public:
     return false;
   }
 
+  void PerformAction(Event *event_ptr) override {
+    StopInfo::PerformAction(event_ptr);
+
+    // A signal of SIGTRAP indicates that a break instruction has been hit
+    if (m_value == SIGTRAP) {
+      Log *log = GetLog(LLDBLog::Process);
+      Status error;
+      uint32_t bytes_at_pc = 0;
+      auto reg_ctx_sp = GetThread()->GetRegisterContext();
+      auto process_sp = GetThread()->GetProcess();
+      addr_t pc = reg_ctx_sp->GetPC();
+      if (!process_sp->ReadMemory(pc, &bytes_at_pc, sizeof(bytes_at_pc),
+                                  error)) {
+        // If this fails, we simply don't handle the step-over-break logic and
+        // log the failure
+        LLDB_LOG(log, "failed to read program bytes at pc address {}", pc);
+        return;
+      }
+      auto &target = process_sp->GetTarget();
+      auto platform_sp = target.GetPlatform();
+      auto platform_opcode =
+          platform_sp->SoftwareTrapOpcodeTable(target.GetArchitecture());
+      if (!std::memcmp(&bytes_at_pc, platform_opcode.data(),
+                       platform_opcode.size())) {
+        LLDB_LOG(log,
+                 "Stepping over non-LLDB breakpoint in debuggee to new pc: {}",
+                 pc + platform_opcode.size());
+        reg_ctx_sp->SetPC(pc + platform_opcode.size());
+      }
+    }
+  }
+
   bool ShouldStop(Event *event_ptr) override { return IsShouldStopSignal(); }
 
   // If should stop returns false, check if we should notify of this event
