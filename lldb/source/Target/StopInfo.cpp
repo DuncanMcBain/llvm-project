@@ -1160,8 +1160,7 @@ public:
   }
 
   void PerformAction(Event *event_ptr) override {
-    Log *log = GetLog(LLDBLog::Process);
-    StopInfo::PerformAction(event_ptr);
+    Log *log = GetLog(LLDBLog::Temporary);
 
     // A signal of SIGTRAP indicates that a break instruction has been hit
     LLDB_LOG(log, "Handling signal process type: {}", m_value);
