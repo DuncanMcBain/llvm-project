@@ -1181,6 +1181,7 @@ public:
       auto platform_sp = target.GetPlatform();
       auto platform_opcode =
           platform_sp->SoftwareTrapOpcodeTable(target.GetArchitecture());
+      LLDB_LOG(log, "pc: {}, opcode: {}", pc, bytes_at_pc);
       if (!std::memcmp(&bytes_at_pc, platform_opcode.data(),
                        platform_opcode.size())) {
         LLDB_LOG(log,
