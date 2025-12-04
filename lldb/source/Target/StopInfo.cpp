@@ -1160,11 +1160,12 @@ public:
   }
 
   void PerformAction(Event *event_ptr) override {
+    Log *log = GetLog(LLDBLog::Process);
     StopInfo::PerformAction(event_ptr);
 
     // A signal of SIGTRAP indicates that a break instruction has been hit
+    LLDB_LOG(log, "Handling signal process type: {}", m_value);
     if (m_value == SIGTRAP) {
-      Log *log = GetLog(LLDBLog::Process);
       Status error;
       uint32_t bytes_at_pc = 0;
       auto reg_ctx_sp = GetThread()->GetRegisterContext();
