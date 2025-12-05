@@ -1181,11 +1181,12 @@ public:
       auto platform_sp = target.GetPlatform();
       auto platform_opcode =
           platform_sp->SoftwareTrapOpcodeTable(target.GetArchitecture());
-      LLDB_LOG(log, "pc: {}, opcode: {}", pc, bytes_at_pc);
-      if (!std::memcmp(&bytes_at_pc, platform_opcode.data(),
+      uint32_t mask = 0xd4200000;
+      auto masked_bytes = bytes_at_pc & mask;
+      LLDB_LOG(log, "pc: {}, opcode: {}, masked: {}", pc, bytes_at_pc, masked_bytes);
+      if (!std::memcmp(&masked_bytes, platform_opcode.data(),
                        platform_opcode.size())) {
-        LLDB_LOG(log,
-                 "Stepping over non-LLDB breakpoint in debuggee to new pc: {}",
+        LLDB_LOG(log, "Stepping over breakpoint in debuggee to new pc: {}",
                  pc + platform_opcode.size());
         reg_ctx_sp->SetPC(pc + platform_opcode.size());
       }
