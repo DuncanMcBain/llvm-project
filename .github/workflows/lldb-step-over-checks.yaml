@@ -1,6 +1,7 @@
 name: lldb step over fails
 
-on: 
+on:
+  push:
   workflow_dispatch:
 
 jobs:
@@ -17,7 +18,6 @@ jobs:
             targets: "AArch64"
     
     runs-on: ${{ matrix.os }}
-    
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +34,7 @@ jobs:
             -DLLVM_HOST_TRIPLE="${{ matrix.arch }}-apple-macosx"
 
       - name: Build
-        run: ninja -C build lldb debugserver clang
+        run: ninja -C build lldb debugserver clang 
 
       - name: Run Tests
         run: |
