@@ -38,7 +38,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
             -DLLVM_ENABLE_PROJECTS="clang;lldb" \
-            -DLLVM_ENABLE_RUNTIMES="compiler-rt;libcxx" \
+            -DLLVM_ENABLE_RUNTIMES="compiler-rt;libcxx;libcxxabi" \
             -DLLVM_TARGETS_TO_BUILD="${{ matrix.targets }}" \
             -DLLVM_HOST_TRIPLE="${{ matrix.arch }}-apple-macosx" \
             -DLLVM_CCACHE_BUILD=ON \
