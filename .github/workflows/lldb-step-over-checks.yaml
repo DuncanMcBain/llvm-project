@@ -29,6 +29,7 @@ jobs:
 
       - name: Configure
         run: |
+          source ~/lldb-venv/bin/activate
           cmake -S llvm -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
@@ -38,7 +39,9 @@ jobs:
             -DLLVM_HOST_TRIPLE="${{ matrix.arch }}-apple-macosx" \
 
       - name: Build
-        run: ninja -C build lldb debugserver clang FileCheck dsymutil lldb-dotest
+        run:
+          source ~/lldb-venv/bin/activate
+          ninja -C build lldb debugserver clang FileCheck dsymutil lldb-dotest
 
       - name: Run Tests
         run: |
