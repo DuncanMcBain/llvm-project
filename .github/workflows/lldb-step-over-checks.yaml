@@ -27,7 +27,17 @@ jobs:
           python3 -m venv ~/lldb-venv
           ~/lldb-venv/bin/pip install packaging
 
+      - name: Restore build cache
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: ${{ runner.os }}-${{ matrix.arch }}-build-${{ hashFiles('llvm/CMakeLists.txt', 'llvm/cmake/**', 'clang/CMakeLists.txt', 'lldb/CMakeLists.txt', 'compiler-rt/CMakeLists.txt', 'libcxx/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-build-
+
       - name: Configure
+        if: steps.cache-build.outputs.cache-hit != 'true'
         run: |
           source ~/lldb-venv/bin/activate
           cmake -S llvm -B build -G Ninja \
@@ -47,8 +57,8 @@ jobs:
         run: |
           source ~/lldb-venv/bin/activate
           if [ "${{ matrix.arch }}" == "arm64" ]; then
-            ./build/bin/lldb-dotest -v lldb/test/API/functionalities/builtin-debugtrap
-          else
             ./build/bin/llvm-lit -v lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
             ./build/bin/llvm-lit -v lldb/test/Shell/Expr/TestExprWithSideEffectOnConvenienceVar.cpp
+          else
+            ./build/bin/lldb-dotest -v lldb/test/API/functionalities/builtin-debugtrap
           fi
