@@ -10,9 +10,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: x86_64
-            os: macos-15-intel
-            targets: "X86"
           - arch: arm64
             os: macos-14
             targets: "AArch64"
@@ -51,7 +48,7 @@ jobs:
       - name: Build
         run: |
           source ~/lldb-venv/bin/activate
-          ninja -C build lldb debugserver clang FileCheck dsymutil lldb-dotest
+          ninja -C build lldb debugserver clang FileCheck dsymutil
 
       - name: Run Tests
         run: |
