@@ -54,8 +54,8 @@ jobs:
         run: |
           source ~/lldb-venv/bin/activate
           if [ "${{ matrix.arch }}" == "arm64" ]; then
-            ./build/bin/llvm-lit -v lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
-            ./build/bin/llvm-lit -v lldb/test/Shell/Expr/TestExprWithSideEffectOnConvenienceVar.cpp
+            ./build/bin/llvm-lit -v --timeout 30 lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
+            ./build/bin/llvm-lit -v --timeout 30 lldb/test/Shell/Expr/TestExprWithSideEffectOnConvenienceVar.cpp
           else
             ./build/bin/lldb-dotest -v lldb/test/API/functionalities/builtin-debugtrap
           fi
