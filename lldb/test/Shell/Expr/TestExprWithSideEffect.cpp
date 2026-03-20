@@ -3,6 +3,7 @@
 
 // RUN: %build %s -o %t
 // RUN: %lldb %t \
+// RUN:   -o "log enable -f /tmp/lldb.log lldb step thread process" \
 // RUN:   -o "settings set target.process.track-memory-cache-changes false" \
 // RUN:   -o "run" \
 // RUN:   -o "frame variable x" \
@@ -14,6 +15,7 @@
 // RUN:   -o "frame variable x" \
 // RUN:   -o "continue" \
 // RUN:   -o "frame variable x" \
+// RUN:   -o "log flush" \
 // RUN:   -o "exit" | FileCheck %s -dump-input=fail
 
 class X {

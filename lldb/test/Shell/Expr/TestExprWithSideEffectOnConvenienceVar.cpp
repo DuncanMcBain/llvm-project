@@ -5,6 +5,7 @@
 
 // RUN: %build %s -o %t
 // RUN: %lldb %t \
+// RUN:   -o "log enable -f /tmp/lldb.log lldb step thread process" \
 // RUN:   -o "settings set target.process.track-memory-cache-changes false" \
 // RUN:   -o "run" \
 // RUN:   -o "expr int \$y = 11" \
@@ -16,6 +17,7 @@
 // RUN:   -o "expr X \$mine = {100, 200}" \
 // RUN:   -o "expr \$mine.a = 300" \
 // RUN:   -o "expr \$mine" \
+// RUN:   -o "log flush" \
 // RUN:   -o "exit" | FileCheck %s -dump-input=fail
 
 struct X {
