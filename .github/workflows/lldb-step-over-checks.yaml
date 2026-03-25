@@ -53,9 +53,34 @@ jobs:
       - name: Run Tests
         run: |
           source ~/lldb-venv/bin/activate
+
+          # Run a lit test with --timeout 30, but sample any lldb process at 20s
+          # so we get a backtrace in the log if the test hangs.
+          run_with_backtrace() {
+            local test=$1
+            ./build/bin/llvm-lit -v --timeout 30 "$test" &
+            local lit_pid=$!
+            (
+              sleep 20
+              if kill -0 "$lit_pid" 2>/dev/null; then
+                echo "=== Possible hang detected after 20s, sampling LLDB ==="
+                pgrep -x lldb | while read -r pid; do
+                  echo "--- sample for lldb PID $pid ---"
+                  sample "$pid" 5 2>&1 || true
+                done
+              fi
+            ) &
+            local monitor=$!
+            wait "$lit_pid"
+            local rc=$?
+            kill "$monitor" 2>/dev/null || true
+            wait "$monitor" 2>/dev/null || true
+            return "$rc"
+          }
+
           if [ "${{ matrix.arch }}" == "arm64" ]; then
-            ./build/bin/llvm-lit -v --timeout 30 lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
-            ./build/bin/llvm-lit -v --timeout 30 lldb/test/Shell/Expr/TestExprWithSideEffectOnConvenienceVar.cpp
+            run_with_backtrace lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
+            run_with_backtrace lldb/test/Shell/Expr/TestExprWithSideEffectOnConvenienceVar.cpp
           else
             ./build/bin/lldb-dotest -v lldb/test/API/functionalities/builtin-debugtrap
           fi
