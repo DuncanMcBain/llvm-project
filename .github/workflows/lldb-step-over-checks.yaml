@@ -63,10 +63,19 @@ jobs:
             (
               sleep 20
               if kill -0 "$lit_pid" 2>/dev/null; then
-                echo "=== Possible hang detected after 20s, sampling LLDB ==="
+                echo "=== Hang detected after 20s, sending SIGABRT to lldb ==="
                 pgrep -x lldb | while read -r pid; do
-                  echo "--- sample for lldb PID $pid ---"
-                  sample "$pid" 5 2>&1 || true
+                  echo "--- Sending SIGABRT to lldb PID $pid ---"
+                  kill -ABRT "$pid" 2>/dev/null || true
+                done
+                # Give the crash reporter time to write the report
+                sleep 5
+                echo "=== Crash reports ==="
+                for f in $(ls -t ~/Library/Logs/DiagnosticReports/lldb*.ips \
+                              ~/Library/Logs/DiagnosticReports/lldb*.crash \
+                              2>/dev/null | head -3); do
+                  echo "--- $f ---"
+                  cat "$f" || true
                 done
               fi
             ) &
