@@ -63,20 +63,24 @@ jobs:
             (
               sleep 20
               if kill -0 "$lit_pid" 2>/dev/null; then
-                echo "=== Hang detected after 20s, sending SIGABRT to lldb ==="
+                echo "=== Hang detected after 20s, attaching system lldb ==="
                 pgrep -x lldb | while read -r pid; do
-                  echo "--- Sending SIGABRT to lldb PID $pid ---"
-                  kill -ABRT "$pid" 2>/dev/null || true
+                  echo "--- thread backtrace all for lldb PID $pid ---"
+                  /usr/bin/lldb -p "$pid" \
+                    -o "thread backtrace all" \
+                    -o "detach" \
+                    -o "quit" 2>&1 || true
                 done
-                # Give the crash reporter time to write the report
-                sleep 15
-                echo "=== Crash reports ==="
-                for f in $(ls -t ~/Library/Logs/DiagnosticReports/lldb*.ips \
-                              ~/Library/Logs/DiagnosticReports/lldb*.crash \
-                              2>/dev/null | head -3); do
-                  echo "--- $f ---"
-                  cat "$f" || true
+                pgrep -x debugserver | while read -r pid; do
+                  echo "--- thread backtrace all for debugserver PID $pid ---"
+                  /usr/bin/lldb -p "$pid" \
+                    -o "thread backtrace all" \
+                    -o "detach" \
+                    -o "quit" 2>&1 || true
                 done
+                # Now kill the hung processes so lit's timeout fires sooner
+                pgrep -x lldb | xargs kill -ABRT 2>/dev/null || true
+                pgrep -x debugserver | xargs kill -ABRT 2>/dev/null || true
               fi
             ) &
             local monitor=$!
