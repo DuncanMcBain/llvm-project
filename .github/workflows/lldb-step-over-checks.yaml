@@ -65,18 +65,14 @@ jobs:
               if kill -0 "$lit_pid" 2>/dev/null; then
                 echo "=== Hang detected after 10s, attaching system lldb ==="
                 pgrep -x lldb | while read -r pid; do
-                  echo "--- thread backtrace all for lldb PID $pid ---"
-                  /usr/bin/lldb --batch -p "$pid" \
-                    -o "thread backtrace all" \
-                    -o "detach" 2>&1 || true
+                  echo "--- spindump for lldb PID $pid ---"
+                  timeout 10 spindump "$pid" 3 10 -stdout 2>&1 || true
                 done
                 pgrep -x debugserver | while read -r pid; do
-                  echo "--- thread backtrace all for debugserver PID $pid ---"
-                  /usr/bin/lldb --batch -p "$pid" \
-                    -o "thread backtrace all" \
-                    -o "detach" 2>&1 || true
+                  echo "--- spindump for debugserver PID $pid ---"
+                  timeout 10 spindump "$pid" 3 10 -stdout 2>&1 || true
                 done
-                # Now kill the hung processes so lit's timeout fires sooner
+                # Kill the hung processes whether or not spindump worked
                 pgrep -x lldb | xargs kill -ABRT 2>/dev/null || true
                 pgrep -x debugserver | xargs kill -ABRT 2>/dev/null || true
               fi
