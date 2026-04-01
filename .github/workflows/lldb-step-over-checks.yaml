@@ -13,7 +13,7 @@ jobs:
           - arch: arm64
             os: macos-14
             targets: "AArch64"
-    
+
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,29 +50,147 @@ jobs:
           source ~/lldb-venv/bin/activate
           ninja -C build lldb debugserver clang FileCheck dsymutil count not llvm-config
 
-      - name: Run Tests
+      - name: Diagnostic info
+        run: |
+          echo "=== macOS version ==="
+          sw_vers
+          echo ""
+          echo "=== Xcode version ==="
+          xcodebuild -version 2>&1 || true
+          echo ""
+          echo "=== Built debugserver code-signing ==="
+          codesign -dvv ./build/bin/debugserver 2>&1 || true
+          echo "--- entitlements ---"
+          codesign -d --entitlements - ./build/bin/debugserver 2>&1 || true
+          echo ""
+          echo "=== System debugserver ==="
+          XCODE_DS="$(xcode-select -p)/../SharedFrameworks/LLDB.framework/Versions/A/Resources/debugserver"
+          if [ -f "$XCODE_DS" ]; then
+            codesign -dvv "$XCODE_DS" 2>&1 || true
+            echo "--- entitlements ---"
+            codesign -d --entitlements - "$XCODE_DS" 2>&1 || true
+          else
+            echo "Xcode debugserver not found at $XCODE_DS"
+          fi
+          echo ""
+          echo "=== SIP status ==="
+          csrutil status 2>&1 || true
+          echo ""
+          echo "=== Developer mode ==="
+          DevToolsSecurity -status 2>&1 || true
+
+      - name: Run instrumented test
         run: |
           source ~/lldb-venv/bin/activate
 
-          # Run a lit test with --timeout 30, but sample any lldb process at 20s
-          # so we get a backtrace in the log if the test hangs.
+          # Compile the test source with the built clang
+          TEST_SRC=lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
+          TEST_BIN=/tmp/test_expr_side_effect
+          # Strip the RUN/CHECK lines and compile
+          ./build/bin/clang++ -g -o "$TEST_BIN" "$TEST_SRC"
+
+          LOGFILE=/tmp/lldb-process.log
+          HOST_LOG=/tmp/lldb-host.log
+
+          echo "=== Running instrumented LLDB test ==="
+          # Use script(1) to defeat pipe buffering so all output is captured
+          # even if LLDB hangs and gets killed.
+          script -q /tmp/lldb-raw-output.txt \
+            ./build/bin/lldb "$TEST_BIN" \
+              -o "log enable lldb process event -f $LOGFILE" \
+              -o "log enable lldb host -f $HOST_LOG" \
+              -o "settings set target.process.track-memory-cache-changes false" \
+              -o "run" \
+              -o "frame variable x" \
+              -o "expr x.inc()" \
+              -o "frame variable x" \
+              -o "continue" \
+              -o "frame variable x" \
+              -o "expr x.i = 10" \
+              -o "frame variable x" \
+              -o "continue" \
+              -o "frame variable x" \
+              -o "exit" &
+          LLDB_PID=$!
+
+          # Hang detector: after 20s, dump diagnostics and kill
+          (
+            sleep 20
+            if kill -0 "$LLDB_PID" 2>/dev/null; then
+              echo ""
+              echo "========================================="
+              echo "=== HANG DETECTED after 20s ==="
+              echo "========================================="
+              echo ""
+
+              echo "=== Running lldb/debugserver processes ==="
+              ps aux | grep -E 'lldb|debugserver' | grep -v grep || true
+              echo ""
+
+              # Dump the LLDB logs (file-based, already flushed to disk)
+              echo "=== LLDB process log ==="
+              cat "$LOGFILE" 2>/dev/null || echo "(no log file)"
+              echo ""
+              echo "=== LLDB host log ==="
+              cat "$HOST_LOG" 2>/dev/null || echo "(no host log)"
+              echo ""
+
+              # sample works without root (unlike spindump)
+              for proc in lldb debugserver; do
+                pgrep -x "$proc" | while read -r pid; do
+                  echo "--- sample $proc PID $pid ---"
+                  gtimeout 5 sample "$pid" 1 -file "/tmp/sample-${proc}-${pid}.txt" 2>&1 || true
+                  cat "/tmp/sample-${proc}-${pid}.txt" 2>/dev/null || echo "(sample failed)"
+                  echo ""
+                done
+              done
+
+              # Kill hung processes
+              pgrep -x lldb | xargs kill -ABRT 2>/dev/null || true
+              pgrep -x debugserver | xargs kill -ABRT 2>/dev/null || true
+            fi
+          ) &
+          MONITOR=$!
+
+          wait "$LLDB_PID"
+          RC=$?
+          kill "$MONITOR" 2>/dev/null || true
+          wait "$MONITOR" 2>/dev/null || true
+
+          echo ""
+          echo "=== LLDB exit code: $RC ==="
+          echo ""
+          echo "=== LLDB raw output ==="
+          cat /tmp/lldb-raw-output.txt 2>/dev/null || true
+          echo ""
+          echo "=== LLDB process log ==="
+          cat "$LOGFILE" 2>/dev/null || echo "(no log file)"
+          echo ""
+          echo "=== LLDB host log ==="
+          cat "$HOST_LOG" 2>/dev/null || echo "(no host log)"
+
+          exit $RC
+
+      - name: Run original lit test
+        if: always()
+        run: |
+          source ~/lldb-venv/bin/activate
+
+          # Run the original lit test for comparison
           run_with_backtrace() {
             local test=$1
             ./build/bin/llvm-lit -v --timeout 40 "$test" &
             local lit_pid=$!
             (
-              sleep 10
+              sleep 15
               if kill -0 "$lit_pid" 2>/dev/null; then
-                echo "=== Hang detected after 10s, attaching system lldb ==="
-                pgrep -x lldb | while read -r pid; do
-                  echo "--- spindump for lldb PID $pid ---"
-                  gtimeout 10 spindump "$pid" 3 10 -stdout 2>&1 || true
+                echo "=== Hang detected after 15s ==="
+                for proc in lldb debugserver; do
+                  pgrep -x "$proc" | while read -r pid; do
+                    echo "--- sample $proc PID $pid ---"
+                    gtimeout 5 sample "$pid" 1 2>&1 || true
+                  done
                 done
-                pgrep -x debugserver | while read -r pid; do
-                  echo "--- spindump for debugserver PID $pid ---"
-                  gtimeout 10 spindump "$pid" 3 10 -stdout 2>&1 || true
-                done
-                # Kill the hung processes whether or not spindump worked
                 pgrep -x lldb | xargs kill -ABRT 2>/dev/null || true
                 pgrep -x debugserver | xargs kill -ABRT 2>/dev/null || true
               fi
