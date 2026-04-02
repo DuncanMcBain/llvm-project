@@ -842,6 +842,7 @@ bool DNBArchMachARM64::NotifyException(MachException::Data &exc) {
 
       return true;
     }
+    break;
   }
   return false;
 }
