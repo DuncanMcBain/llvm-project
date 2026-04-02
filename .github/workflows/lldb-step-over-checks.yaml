@@ -116,8 +116,13 @@ jobs:
           codesign -dvv ./build/bin/debugserver 2>&1 || true
           codesign -d --entitlements - ./build/bin/debugserver 2>&1 || true
 
-          # Re-sign with lldb_codesign and the macOS entitlements
-          ENTITLEMENTS="lldb/tools/debugserver/resources/debugserver-macosx-entitlements.plist"
+          # Re-sign with lldb_codesign and the private macOS entitlements.
+          # The public entitlement (com.apple.security.cs.debugger) alone is
+          # not sufficient for task_for_pid() on GH Actions VMs. The private
+          # entitlements (com.apple.private.cs.debugger, private.set-exception-port,
+          # private.thread-set-state) match what the system debugserver has.
+          # With SIP disabled, these should be honored even with a self-signed cert.
+          ENTITLEMENTS="lldb/tools/debugserver/resources/debugserver-macosx-private-entitlements.plist"
           if security find-certificate -c "lldb_codesign" /Library/Keychains/System.keychain > /dev/null 2>&1; then
             echo ""
             echo "Re-signing debugserver with lldb_codesign certificate..."
