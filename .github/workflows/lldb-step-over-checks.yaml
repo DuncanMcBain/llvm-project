@@ -106,7 +106,7 @@ jobs:
       - name: Build
         run: |
           source ~/lldb-venv/bin/activate
-          ninja -C build lldb debugserver clang FileCheck dsymutil count not llvm-config llvm-lit
+          ninja -C build lldb debugserver clang FileCheck dsymutil count not llvm-config
 
       - name: Re-sign debugserver
         run: |
