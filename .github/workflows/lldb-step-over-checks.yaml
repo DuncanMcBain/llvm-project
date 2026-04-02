@@ -79,70 +79,109 @@ jobs:
           echo "=== Developer mode ==="
           DevToolsSecurity -status 2>&1 || true
 
-      # Test 1: Regular breakpoint (no __builtin_debugtrap).
-      # If this hangs, the environment is fundamentally broken.
-      - name: "Test: regular breakpoint (no trap)"
-        if: always()
+      - name: Compile test binaries
         run: |
-          cat > /tmp/test_no_trap.c << 'EOF'
+          SDK=$(xcrun --show-sdk-path)
+
+          cat > /tmp/test_no_trap.c << 'CEOF'
           int global = 0;
           int main() {
             global = 5;
             global = 10;
             return 0;
           }
-          EOF
-          SDK=$(xcrun --show-sdk-path)
+          CEOF
           ./build/bin/clang -g -O0 -isysroot "$SDK" -o /tmp/test_no_trap /tmp/test_no_trap.c
 
-          echo "=== Regular breakpoint test ==="
-          OUTPUT=$(./build/bin/lldb --no-lldbinit /tmp/test_no_trap \
-            -o "b main" \
-            -o "run" \
-            -o "p global" \
-            -o "continue" \
-            -o "exit" 2>&1) || true
-          echo "$OUTPUT"
-          echo "$OUTPUT" | grep -q "stop reason = breakpoint" && echo "PASS" || echo "FAIL"
-
-      # Test 2: Single __builtin_debugtrap, just run + exit.
-      # If this hangs but Test 1 passes, PerformAction's ReadMemory
-      # during event processing is the likely cause.
-      - name: "Test: minimal trap (run + exit)"
-        if: always()
-        run: |
-          cat > /tmp/test_minimal.c << 'EOF'
+          cat > /tmp/test_minimal.c << 'CEOF'
           int main() {
             __builtin_debugtrap();
             return 0;
           }
-          EOF
-          SDK=$(xcrun --show-sdk-path)
+          CEOF
           ./build/bin/clang -g -O0 -isysroot "$SDK" -o /tmp/test_minimal /tmp/test_minimal.c
 
+          ./build/bin/clang++ -g -isysroot "$SDK" -o /tmp/test_expr_side_effect \
+            lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
+
+          echo "All test binaries compiled OK"
+
+      # Every test uses a background process + watchdog pattern so output
+      # streams in real time and hangs are caught with a 60s timeout.
+
+      - name: "Test: regular breakpoint (no trap)"
+        if: always()
+        timeout-minutes: 2
+        run: |
+          LOG=/tmp/log-no-trap
+          echo "=== Regular breakpoint test ==="
+          ./build/bin/lldb --no-lldbinit /tmp/test_no_trap \
+            -o "log enable lldb process event host -f ${LOG}-process.log" \
+            -o "log enable gdb-remote packets -f ${LOG}-gdb.log" \
+            -o "b main" \
+            -o "run" \
+            -o "p global" \
+            -o "continue" \
+            -o "exit" &
+          PID=$!
+          (
+            sleep 60
+            if kill -0 $PID 2>/dev/null; then
+              echo "HANG DETECTED (regular breakpoint)"
+              echo "=== Process log ===" && cat ${LOG}-process.log 2>/dev/null || true
+              echo "=== GDB log (last 50) ===" && tail -50 ${LOG}-gdb.log 2>/dev/null || true
+              for p in lldb debugserver; do
+                pgrep -x $p | while read pid; do
+                  echo "--- sample $p $pid ---" && gtimeout 5 sample $pid 1 2>&1 || true
+                done
+              done
+              kill $PID 2>/dev/null
+            fi
+          ) &
+          W=$!; wait $PID; RC=$?; kill $W 2>/dev/null; wait $W 2>/dev/null
+          echo "=== Exit code: $RC ==="
+          cat ${LOG}-process.log 2>/dev/null || true
+
+      - name: "Test: minimal trap (run + exit)"
+        if: always()
+        timeout-minutes: 2
+        run: |
+          LOG=/tmp/log-minimal
           echo "=== Minimal trap test ==="
-          OUTPUT=$(./build/bin/lldb --no-lldbinit /tmp/test_minimal \
+          ./build/bin/lldb --no-lldbinit /tmp/test_minimal \
+            -o "log enable lldb process event host -f ${LOG}-process.log" \
+            -o "log enable gdb-remote packets -f ${LOG}-gdb.log" \
             -o "run" \
             -o "bt" \
-            -o "exit" 2>&1) || true
-          echo "$OUTPUT"
-          echo "$OUTPUT" | grep -q "stop reason" && echo "PASS" || echo "FAIL"
+            -o "exit" &
+          PID=$!
+          (
+            sleep 60
+            if kill -0 $PID 2>/dev/null; then
+              echo "HANG DETECTED (minimal trap)"
+              echo "=== Process log ===" && cat ${LOG}-process.log 2>/dev/null || true
+              echo "=== GDB log (last 50) ===" && tail -50 ${LOG}-gdb.log 2>/dev/null || true
+              for p in lldb debugserver; do
+                pgrep -x $p | while read pid; do
+                  echo "--- sample $p $pid ---" && gtimeout 5 sample $pid 1 2>&1 || true
+                done
+              done
+              kill $PID 2>/dev/null
+            fi
+          ) &
+          W=$!; wait $PID; RC=$?; kill $W 2>/dev/null; wait $W 2>/dev/null
+          echo "=== Exit code: $RC ==="
+          cat ${LOG}-process.log 2>/dev/null || true
 
-      # Test 3: Full upstream test reproduction with logging.
-      # This is the test that hangs. Logging captures the event flow.
       - name: "Test: full expr test with logging"
         if: always()
+        timeout-minutes: 2
         run: |
-          TEST_SRC=lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
-          TEST_BIN=/tmp/test_expr_side_effect
-          SDK=$(xcrun --show-sdk-path)
-          ./build/bin/clang++ -g -isysroot "$SDK" -o "$TEST_BIN" "$TEST_SRC"
-
           LOGFILE=/tmp/lldb-process.log
           GDB_LOG=/tmp/lldb-gdb-remote.log
 
           echo "=== Full expr test with logging ==="
-          ./build/bin/lldb --no-lldbinit "$TEST_BIN" \
+          ./build/bin/lldb --no-lldbinit /tmp/test_expr_side_effect \
             -o "log enable lldb process event -f $LOGFILE" \
             -o "log enable gdb-remote packets -f $GDB_LOG" \
             -o "run" \
@@ -152,14 +191,14 @@ jobs:
             -o "continue" \
             -o "frame variable x" \
             -o "exit" &
-          LLDB_PID=$!
+          PID=$!
 
           (
-            sleep 30
-            if kill -0 "$LLDB_PID" 2>/dev/null; then
+            sleep 60
+            if kill -0 "$PID" 2>/dev/null; then
               echo ""
               echo "========================================="
-              echo "=== HANG DETECTED after 30s ==="
+              echo "=== HANG DETECTED after 60s ==="
               echo "========================================="
 
               echo "=== Process log ==="
@@ -176,16 +215,15 @@ jobs:
                 done
               done
 
-              pgrep -x lldb | xargs kill -ABRT 2>/dev/null || true
-              pgrep -x debugserver | xargs kill -ABRT 2>/dev/null || true
+              kill $PID 2>/dev/null
             fi
           ) &
-          MONITOR=$!
+          W=$!
 
-          wait "$LLDB_PID"
+          wait $PID
           RC=$?
-          kill "$MONITOR" 2>/dev/null || true
-          wait "$MONITOR" 2>/dev/null || true
+          kill $W 2>/dev/null
+          wait $W 2>/dev/null
 
           echo ""
           echo "=== Exit code: $RC ==="
@@ -194,26 +232,18 @@ jobs:
           echo "=== GDB remote log (last 50 lines) ==="
           tail -50 "$GDB_LOG" 2>/dev/null || echo "(none)"
 
-      # Test 4: Same test but with PerformAction disabled.
-      # We revert the PerformAction additions in the source then rebuild
-      # just the affected files. If this passes, the hang requires
-      # PerformAction (and its ReadMemory call during event processing).
-      # If this also hangs, the Platform.cpp refactoring is the cause.
       - name: "Test: with PerformAction disabled"
         if: always()
+        timeout-minutes: 5
         run: |
           echo "=== Disabling PerformAction ==="
 
-          # Remove PerformAction from StopInfoMachException.cpp
           sed -i '' '/^void StopInfoMachException::PerformAction/,/^}/d' \
             lldb/source/Plugins/Process/Utility/StopInfoMachException.cpp
 
-          # Remove declaration from StopInfoMachException.h
           sed -i '' '/Allow this plugin to respond/,/PerformAction.*override;/d' \
             lldb/source/Plugins/Process/Utility/StopInfoMachException.h
 
-          # Remove StopInfoUnixSignal PerformAction from StopInfo.cpp
-          # (the block: void PerformAction ... if SIGTRAP ... SkipOverTrap ... })
           python3 -c "
           import re
           with open('lldb/source/Target/StopInfo.cpp') as f:
@@ -225,41 +255,40 @@ jobs:
               f.write(s)
           "
 
-          # Rebuild just LLDB (incremental, should be fast)
           source ~/lldb-venv/bin/activate
           ninja -C build lldb
 
-          echo "=== Running test with PerformAction disabled ==="
           if [ ! -f /tmp/test_expr_side_effect ]; then
-            echo "FAIL: test binary not found (Test 3 compile failed)"
+            echo "FAIL: test binary not found (compile step failed)"
             exit 1
           fi
+
+          LOG=/tmp/log-no-performaction
+          echo "=== Running test with PerformAction disabled ==="
           ./build/bin/lldb --no-lldbinit /tmp/test_expr_side_effect \
+            -o "log enable lldb process event host -f ${LOG}-process.log" \
+            -o "log enable gdb-remote packets -f ${LOG}-gdb.log" \
             -o "run" \
             -o "frame variable x" \
             -o "continue" \
             -o "frame variable x" \
             -o "continue" \
             -o "exit" &
-          LLDB_PID=$!
-
+          PID=$!
           (
-            sleep 30
-            if kill -0 "$LLDB_PID" 2>/dev/null; then
+            sleep 60
+            if kill -0 "$PID" 2>/dev/null; then
               echo "=== HANG with PerformAction DISABLED ==="
-              echo "This means the Platform.cpp refactoring causes the hang."
-              pgrep -x lldb | xargs kill -ABRT 2>/dev/null || true
-              pgrep -x debugserver | xargs kill -ABRT 2>/dev/null || true
+              echo "Conclusion: Platform.cpp refactoring causes the hang."
+              echo "=== Process log ===" && cat ${LOG}-process.log 2>/dev/null || true
+              echo "=== GDB log (last 50) ===" && tail -50 ${LOG}-gdb.log 2>/dev/null || true
+              kill $PID 2>/dev/null
             fi
           ) &
-          MONITOR=$!
-
-          wait "$LLDB_PID"
-          RC=$?
-          kill "$MONITOR" 2>/dev/null || true
-          wait "$MONITOR" 2>/dev/null || true
+          W=$!; wait $PID; RC=$?; kill $W 2>/dev/null; wait $W 2>/dev/null
 
           echo "=== Exit code: $RC ==="
+          cat ${LOG}-process.log 2>/dev/null || true
           if [ $RC -eq 0 ]; then
             echo "PASS: No hang with PerformAction disabled."
             echo "Conclusion: the hang requires PerformAction (ReadMemory during event processing)."
@@ -267,13 +296,14 @@ jobs:
 
       - name: Run original lit tests
         if: always()
+        timeout-minutes: 5
         run: |
           source ~/lldb-venv/bin/activate
 
           run_with_timeout() {
             local test=$1
             echo "=== Running: $test ==="
-            gtimeout 40 ./build/bin/llvm-lit -v --timeout 30 "$test" 2>&1 || true
+            gtimeout 60 ./build/bin/llvm-lit -v --timeout 40 "$test" 2>&1 || true
           }
 
           if [ "${{ matrix.arch }}" == "arm64" ]; then
