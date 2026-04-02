@@ -24,14 +24,72 @@ jobs:
           python3 -m venv ~/lldb-venv
           ~/lldb-venv/bin/pip install packaging psutil
 
+      - name: Setup lldb_codesign certificate
+        run: |
+          # The built debugserver needs a trusted code signing certificate
+          # to attach to processes on macOS. Without this, debugserver is
+          # adhoc-signed and vAttach hangs because task_for_pid() fails.
+          #
+          # This creates a self-signed cert in the System keychain, which
+          # cmake detects and uses to sign debugserver during the build.
+          CERT="lldb_codesign"
+
+          # Check if already present
+          if security find-certificate -c "$CERT" /Library/Keychains/System.keychain > /dev/null 2>&1; then
+            echo "Certificate '$CERT' already exists"
+            exit 0
+          fi
+
+          echo "Creating lldb_codesign certificate..."
+          TMPDIR="${TMPDIR:-/tmp}"
+
+          # Generate self-signed certificate
+          cat > "$TMPDIR/$CERT.tmpl" <<TMPL
+          [ req ]
+          default_bits       = 2048
+          encrypt_key        = no
+          default_md         = sha256
+          prompt             = no
+          distinguished_name = dn
+          [ dn ]
+          commonName         = lldb_codesign
+          [ codesign_reqext ]
+          keyUsage           = critical,digitalSignature
+          extendedKeyUsage   = critical,codeSigning
+          TMPL
+
+          openssl req -new -newkey rsa:2048 -x509 -days 1 \
+            -nodes -config "$TMPDIR/$CERT.tmpl" \
+            -extensions codesign_reqext -batch \
+            -out "$TMPDIR/$CERT.cer" \
+            -keyout "$TMPDIR/$CERT.key"
+
+          # Install as trusted in the System keychain
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain "$TMPDIR/$CERT.cer"
+
+          sudo security import "$TMPDIR/$CERT.key" -A \
+            -k /Library/Keychains/System.keychain
+
+          # Restart taskgated to pick up the new cert
+          sudo pkill -f /usr/libexec/taskgated || true
+
+          # Verify
+          security find-certificate -c "$CERT" /Library/Keychains/System.keychain > /dev/null 2>&1 \
+            && echo "Certificate installed successfully" \
+            || { echo "FAILED to install certificate"; exit 1; }
+
+          rm -f "$TMPDIR/$CERT.tmpl" "$TMPDIR/$CERT.cer" "$TMPDIR/$CERT.key"
+
       - name: Restore build cache
         id: cache-build
         uses: actions/cache@v4
         with:
           path: build
-          key: ${{ runner.os }}-${{ matrix.arch }}-build-${{ hashFiles('llvm/CMakeLists.txt', 'llvm/cmake/**', 'clang/CMakeLists.txt', 'lldb/CMakeLists.txt', 'compiler-rt/CMakeLists.txt', 'libcxx/CMakeLists.txt') }}
+          # Include 'codesign' in cache key so we rebuild with the cert
+          key: ${{ runner.os }}-${{ matrix.arch }}-codesigned-build-${{ hashFiles('llvm/CMakeLists.txt', 'llvm/cmake/**', 'clang/CMakeLists.txt', 'lldb/CMakeLists.txt', 'compiler-rt/CMakeLists.txt', 'libcxx/CMakeLists.txt') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-build-
+            ${{ runner.os }}-${{ matrix.arch }}-codesigned-build-
 
       - name: Configure
         if: steps.cache-build.outputs.cache-hit != 'true'
@@ -48,30 +106,34 @@ jobs:
       - name: Build
         run: |
           source ~/lldb-venv/bin/activate
-          ninja -C build lldb debugserver clang FileCheck dsymutil count not llvm-config
+          ninja -C build lldb debugserver clang FileCheck dsymutil count not llvm-config llvm-lit
+
+      - name: Re-sign debugserver
+        run: |
+          # If cmake didn't detect the cert (cache hit from before cert
+          # was installed), re-sign debugserver now.
+          echo "=== Current debugserver signing ==="
+          codesign -dvv ./build/bin/debugserver 2>&1 || true
+          codesign -d --entitlements - ./build/bin/debugserver 2>&1 || true
+
+          # Re-sign with lldb_codesign and the macOS entitlements
+          ENTITLEMENTS="lldb/tools/debugserver/resources/debugserver-macosx-entitlements.plist"
+          if security find-certificate -c "lldb_codesign" /Library/Keychains/System.keychain > /dev/null 2>&1; then
+            echo ""
+            echo "Re-signing debugserver with lldb_codesign certificate..."
+            codesign -f -s "lldb_codesign" --entitlements "$ENTITLEMENTS" ./build/bin/debugserver
+            echo ""
+            echo "=== After re-signing ==="
+            codesign -dvv ./build/bin/debugserver 2>&1 || true
+            codesign -d --entitlements - ./build/bin/debugserver 2>&1 || true
+          else
+            echo "WARNING: lldb_codesign certificate not found, debugserver remains adhoc-signed"
+          fi
 
       - name: Diagnostic info
         run: |
           echo "=== macOS version ==="
           sw_vers
-          echo ""
-          echo "=== Xcode version ==="
-          xcodebuild -version 2>&1 || true
-          echo ""
-          echo "=== Built debugserver code-signing ==="
-          codesign -dvv ./build/bin/debugserver 2>&1 || true
-          echo "--- entitlements ---"
-          codesign -d --entitlements - ./build/bin/debugserver 2>&1 || true
-          echo ""
-          echo "=== System debugserver ==="
-          XCODE_DS="$(xcode-select -p)/../SharedFrameworks/LLDB.framework/Versions/A/Resources/debugserver"
-          if [ -f "$XCODE_DS" ]; then
-            codesign -dvv "$XCODE_DS" 2>&1 || true
-            echo "--- entitlements ---"
-            codesign -d --entitlements - "$XCODE_DS" 2>&1 || true
-          else
-            echo "Xcode debugserver not found at $XCODE_DS"
-          fi
           echo ""
           echo "=== SIP status ==="
           csrutil status 2>&1 || true
@@ -93,222 +155,56 @@ jobs:
           CEOF
           ./build/bin/clang -g -O0 -isysroot "$SDK" -o /tmp/test_no_trap /tmp/test_no_trap.c
 
-          cat > /tmp/test_minimal.c << 'CEOF'
-          int main() {
-            __builtin_debugtrap();
-            return 0;
-          }
-          CEOF
-          ./build/bin/clang -g -O0 -isysroot "$SDK" -o /tmp/test_minimal /tmp/test_minimal.c
-
           ./build/bin/clang++ -g -isysroot "$SDK" -o /tmp/test_expr_side_effect \
             lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
 
           echo "All test binaries compiled OK"
 
-      # Every test uses a background process + watchdog pattern so output
-      # streams in real time and hangs are caught with a 60s timeout.
-
-      - name: "Test: regular breakpoint (no trap)"
-        if: always()
+      # Quick smoke test: does the re-signed debugserver work at all?
+      - name: "Test: regular breakpoint"
         timeout-minutes: 2
         run: |
-          LOG=/tmp/log-no-trap
           echo "=== Regular breakpoint test ==="
-          ./build/bin/lldb --no-lldbinit /tmp/test_no_trap \
-            -o "log enable lldb process event host -f ${LOG}-process.log" \
-            -o "log enable gdb-remote packets -f ${LOG}-gdb.log" \
+          gtimeout 30 ./build/bin/lldb --no-lldbinit /tmp/test_no_trap \
             -o "b main" \
             -o "run" \
             -o "p global" \
             -o "continue" \
-            -o "exit" &
-          PID=$!
-          (
-            sleep 60
-            if kill -0 $PID 2>/dev/null; then
-              echo "HANG DETECTED (regular breakpoint)"
-              echo "=== Process log ===" && cat ${LOG}-process.log 2>/dev/null || true
-              echo "=== GDB log (last 50) ===" && tail -50 ${LOG}-gdb.log 2>/dev/null || true
-              for p in lldb debugserver; do
-                pgrep -x $p | while read pid; do
-                  echo "--- sample $p $pid ---" && gtimeout 5 sample $pid 1 2>&1 || true
-                done
-              done
-              kill $PID 2>/dev/null
-            fi
-          ) &
-          W=$!; wait $PID; RC=$?; kill $W 2>/dev/null; wait $W 2>/dev/null
-          echo "=== Exit code: $RC ==="
-          cat ${LOG}-process.log 2>/dev/null || true
+            -o "exit" 2>&1
+          echo "PASS: regular breakpoint"
 
-      - name: "Test: minimal trap (run + exit)"
+      # The actual test that was failing upstream
+      - name: "Test: expr with side effect (manual)"
         if: always()
         timeout-minutes: 2
         run: |
-          LOG=/tmp/log-minimal
-          echo "=== Minimal trap test ==="
-          ./build/bin/lldb --no-lldbinit /tmp/test_minimal \
-            -o "log enable lldb process event host -f ${LOG}-process.log" \
-            -o "log enable gdb-remote packets -f ${LOG}-gdb.log" \
-            -o "run" \
-            -o "bt" \
-            -o "exit" &
-          PID=$!
-          (
-            sleep 60
-            if kill -0 $PID 2>/dev/null; then
-              echo "HANG DETECTED (minimal trap)"
-              echo "=== Process log ===" && cat ${LOG}-process.log 2>/dev/null || true
-              echo "=== GDB log (last 50) ===" && tail -50 ${LOG}-gdb.log 2>/dev/null || true
-              for p in lldb debugserver; do
-                pgrep -x $p | while read pid; do
-                  echo "--- sample $p $pid ---" && gtimeout 5 sample $pid 1 2>&1 || true
-                done
-              done
-              kill $PID 2>/dev/null
-            fi
-          ) &
-          W=$!; wait $PID; RC=$?; kill $W 2>/dev/null; wait $W 2>/dev/null
-          echo "=== Exit code: $RC ==="
-          cat ${LOG}-process.log 2>/dev/null || true
-
-      - name: "Test: full expr test with logging"
-        if: always()
-        timeout-minutes: 2
-        run: |
-          LOGFILE=/tmp/lldb-process.log
-          GDB_LOG=/tmp/lldb-gdb-remote.log
-
-          echo "=== Full expr test with logging ==="
-          ./build/bin/lldb --no-lldbinit /tmp/test_expr_side_effect \
-            -o "log enable lldb process event -f $LOGFILE" \
-            -o "log enable gdb-remote packets -f $GDB_LOG" \
+          echo "=== Expr side effect test ==="
+          gtimeout 30 ./build/bin/lldb --no-lldbinit /tmp/test_expr_side_effect \
             -o "run" \
             -o "frame variable x" \
             -o "expr x.inc()" \
             -o "frame variable x" \
             -o "continue" \
             -o "frame variable x" \
-            -o "exit" &
-          PID=$!
-
-          (
-            sleep 60
-            if kill -0 "$PID" 2>/dev/null; then
-              echo ""
-              echo "========================================="
-              echo "=== HANG DETECTED after 60s ==="
-              echo "========================================="
-
-              echo "=== Process log ==="
-              cat "$LOGFILE" 2>/dev/null || echo "(none)"
-              echo ""
-              echo "=== GDB remote log (last 100 lines) ==="
-              tail -100 "$GDB_LOG" 2>/dev/null || echo "(none)"
-              echo ""
-
-              for proc in lldb debugserver; do
-                pgrep -x "$proc" | while read -r pid; do
-                  echo "--- sample $proc PID $pid ---"
-                  gtimeout 5 sample "$pid" 1 2>&1 || true
-                done
-              done
-
-              kill $PID 2>/dev/null
-            fi
-          ) &
-          W=$!
-
-          wait $PID
-          RC=$?
-          kill $W 2>/dev/null
-          wait $W 2>/dev/null
-
-          echo ""
-          echo "=== Exit code: $RC ==="
-          echo "=== Process log ==="
-          cat "$LOGFILE" 2>/dev/null || echo "(none)"
-          echo "=== GDB remote log (last 50 lines) ==="
-          tail -50 "$GDB_LOG" 2>/dev/null || echo "(none)"
-
-      - name: "Test: with PerformAction disabled"
-        if: always()
-        timeout-minutes: 5
-        run: |
-          echo "=== Disabling PerformAction ==="
-
-          sed -i '' '/^void StopInfoMachException::PerformAction/,/^}/d' \
-            lldb/source/Plugins/Process/Utility/StopInfoMachException.cpp
-
-          sed -i '' '/Allow this plugin to respond/,/PerformAction.*override;/d' \
-            lldb/source/Plugins/Process/Utility/StopInfoMachException.h
-
-          python3 -c "
-          import re
-          with open('lldb/source/Target/StopInfo.cpp') as f:
-              s = f.read()
-          s = re.sub(
-              r'  void PerformAction\(\[\[maybe_unused\]\].*?SkipOverTrapInstruction\(\);.*?\n  \}\n',
-              '', s, count=1, flags=re.DOTALL)
-          with open('lldb/source/Target/StopInfo.cpp', 'w') as f:
-              f.write(s)
-          "
-
-          source ~/lldb-venv/bin/activate
-          ninja -C build lldb
-
-          if [ ! -f /tmp/test_expr_side_effect ]; then
-            echo "FAIL: test binary not found (compile step failed)"
-            exit 1
-          fi
-
-          LOG=/tmp/log-no-performaction
-          echo "=== Running test with PerformAction disabled ==="
-          ./build/bin/lldb --no-lldbinit /tmp/test_expr_side_effect \
-            -o "log enable lldb process event host -f ${LOG}-process.log" \
-            -o "log enable gdb-remote packets -f ${LOG}-gdb.log" \
-            -o "run" \
+            -o "expr x.i = 10" \
             -o "frame variable x" \
             -o "continue" \
             -o "frame variable x" \
-            -o "continue" \
-            -o "exit" &
-          PID=$!
-          (
-            sleep 60
-            if kill -0 "$PID" 2>/dev/null; then
-              echo "=== HANG with PerformAction DISABLED ==="
-              echo "Conclusion: Platform.cpp refactoring causes the hang."
-              echo "=== Process log ===" && cat ${LOG}-process.log 2>/dev/null || true
-              echo "=== GDB log (last 50) ===" && tail -50 ${LOG}-gdb.log 2>/dev/null || true
-              kill $PID 2>/dev/null
-            fi
-          ) &
-          W=$!; wait $PID; RC=$?; kill $W 2>/dev/null; wait $W 2>/dev/null
+            -o "exit" 2>&1
+          echo "PASS: expr side effect"
 
-          echo "=== Exit code: $RC ==="
-          cat ${LOG}-process.log 2>/dev/null || true
-          if [ $RC -eq 0 ]; then
-            echo "PASS: No hang with PerformAction disabled."
-            echo "Conclusion: the hang requires PerformAction (ReadMemory during event processing)."
-          fi
-
+      # Run the actual upstream lit tests
       - name: Run original lit tests
         if: always()
         timeout-minutes: 5
         run: |
           source ~/lldb-venv/bin/activate
 
-          run_with_timeout() {
-            local test=$1
-            echo "=== Running: $test ==="
-            gtimeout 60 ./build/bin/llvm-lit -v --timeout 40 "$test" 2>&1 || true
-          }
+          echo "=== TestExprWithSideEffect ==="
+          ./build/bin/llvm-lit -v --timeout 60 \
+            lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
 
-          if [ "${{ matrix.arch }}" == "arm64" ]; then
-            run_with_timeout lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
-            run_with_timeout lldb/test/Shell/Expr/TestExprWithSideEffectOnConvenienceVar.cpp
-          else
-            ./build/bin/lldb-dotest -v lldb/test/API/functionalities/builtin-debugtrap
-          fi
+          echo ""
+          echo "=== TestExprWithSideEffectOnConvenienceVar ==="
+          ./build/bin/llvm-lit -v --timeout 60 \
+            lldb/test/Shell/Expr/TestExprWithSideEffectOnConvenienceVar.cpp
