@@ -97,7 +97,7 @@ jobs:
           echo "=== Regular breakpoint test ==="
           OUTPUT=$(./build/bin/lldb --no-lldbinit /tmp/test_no_trap \
             -o "b main" \
-            -o "process launch" \
+            -o "run" \
             -o "p global" \
             -o "continue" \
             -o "exit" 2>&1) || true
@@ -120,7 +120,7 @@ jobs:
 
           echo "=== Minimal trap test ==="
           OUTPUT=$(./build/bin/lldb --no-lldbinit /tmp/test_minimal \
-            -o "process launch" \
+            -o "run" \
             -o "bt" \
             -o "exit" 2>&1) || true
           echo "$OUTPUT"
@@ -142,7 +142,7 @@ jobs:
           ./build/bin/lldb --no-lldbinit "$TEST_BIN" \
             -o "log enable lldb process event -f $LOGFILE" \
             -o "log enable gdb-remote packets -f $GDB_LOG" \
-            -o "process launch" \
+            -o "run" \
             -o "frame variable x" \
             -o "expr x.inc()" \
             -o "frame variable x" \
@@ -228,7 +228,7 @@ jobs:
 
           echo "=== Running test with PerformAction disabled ==="
           ./build/bin/lldb --no-lldbinit /tmp/test_expr_side_effect \
-            -o "process launch" \
+            -o "run" \
             -o "frame variable x" \
             -o "continue" \
             -o "frame variable x" \
