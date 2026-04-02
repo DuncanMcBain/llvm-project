@@ -92,7 +92,8 @@ jobs:
             return 0;
           }
           EOF
-          ./build/bin/clang -g -O0 -o /tmp/test_no_trap /tmp/test_no_trap.c
+          SDK=$(xcrun --show-sdk-path)
+          ./build/bin/clang -g -O0 -isysroot "$SDK" -o /tmp/test_no_trap /tmp/test_no_trap.c
 
           echo "=== Regular breakpoint test ==="
           OUTPUT=$(./build/bin/lldb --no-lldbinit /tmp/test_no_trap \
@@ -116,7 +117,8 @@ jobs:
             return 0;
           }
           EOF
-          ./build/bin/clang -g -O0 -o /tmp/test_minimal /tmp/test_minimal.c
+          SDK=$(xcrun --show-sdk-path)
+          ./build/bin/clang -g -O0 -isysroot "$SDK" -o /tmp/test_minimal /tmp/test_minimal.c
 
           echo "=== Minimal trap test ==="
           OUTPUT=$(./build/bin/lldb --no-lldbinit /tmp/test_minimal \
@@ -133,7 +135,8 @@ jobs:
         run: |
           TEST_SRC=lldb/test/Shell/Expr/TestExprWithSideEffect.cpp
           TEST_BIN=/tmp/test_expr_side_effect
-          ./build/bin/clang++ -g -o "$TEST_BIN" "$TEST_SRC"
+          SDK=$(xcrun --show-sdk-path)
+          ./build/bin/clang++ -g -isysroot "$SDK" -o "$TEST_BIN" "$TEST_SRC"
 
           LOGFILE=/tmp/lldb-process.log
           GDB_LOG=/tmp/lldb-gdb-remote.log
@@ -227,6 +230,10 @@ jobs:
           ninja -C build lldb
 
           echo "=== Running test with PerformAction disabled ==="
+          if [ ! -f /tmp/test_expr_side_effect ]; then
+            echo "FAIL: test binary not found (Test 3 compile failed)"
+            exit 1
+          fi
           ./build/bin/lldb --no-lldbinit /tmp/test_expr_side_effect \
             -o "run" \
             -o "frame variable x" \
