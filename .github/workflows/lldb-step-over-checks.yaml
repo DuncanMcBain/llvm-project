@@ -10,6 +10,9 @@ jobs:
     strategy:
       matrix:
         include:
+          - arch: x86_64
+            os: macos-15-intel
+            targets: "X86"
           - arch: arm64
             os: macos-14
             targets: "AArch64"
