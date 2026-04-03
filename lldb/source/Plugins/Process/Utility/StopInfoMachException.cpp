@@ -831,7 +831,7 @@ void StopInfoMachException::PerformAction([[maybe_unused]] Event *event_ptr) {
   if (!(m_value == 6 /*EXC_BREAKPOINT*/ &&
         m_exc_code == 1 /*EXC_ARM_BREAKPOINT*/))
     return;
-  SkipOverTrapInstruction();
+  //SkipOverTrapInstruction();
 }
 
 // Detect an unusual situation on Darwin where:
